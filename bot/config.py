@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+# "gemini" — безкоштовний тариф Google; "claude" — платний Anthropic Claude.
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "gemini").strip().lower()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5")
 DB_PATH = os.environ.get("DB_PATH", "data/bot.db")
 TIMEZONE = ZoneInfo(os.environ.get("TIMEZONE", "Europe/Kyiv"))

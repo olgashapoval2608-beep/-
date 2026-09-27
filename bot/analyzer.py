@@ -1,12 +1,15 @@
-"""Усі звернення до Claude API: фото, текстовий опис, поради, питання коучу."""
+"""Усі звернення до ШІ (Gemini або Claude): фото, текст, поради, питання коучу."""
 
 import base64
 import html
+import logging
 
-import anthropic
+import httpx
 from pydantic import BaseModel, Field
 
-from bot.config import CLAUDE_MODEL
+from bot.config import AI_PROVIDER, CLAUDE_MODEL, GEMINI_MODEL
+
+logger = logging.getLogger(__name__)
 
 # Моделі, для яких вмикаємо серверний fallback при відмові (refusal).
 FALLBACK_MODELS = {"claude-opus-5", "claude-fable-5-1"}
@@ -53,13 +56,90 @@ class MealAnalysis(BaseModel):
 
 
 class AnalysisError(Exception):
-    pass
+    """Помилка, текст якої можна показати користувачу."""
 
 
-client = anthropic.AsyncAnthropic()
+RATE_LIMIT_MSG = "Забагато запитів до ШІ. Зачекай хвилинку і спробуй ще раз."
+SERVICE_MSG = "Сервіс ШІ тимчасово недоступний. Спробуй пізніше."
 
 
-def _model_kwargs(effort: str) -> dict:
+# --- Google Gemini (безкоштовний тариф) -----------------------------------------
+
+_gemini_client = None
+
+
+def _gemini():
+    global _gemini_client
+    if _gemini_client is None:
+        from google import genai
+        _gemini_client = genai.Client()  # ключ береться з GEMINI_API_KEY
+    return _gemini_client
+
+
+async def _gemini_call(system: str, parts: list, schema: type[BaseModel] | None):
+    from google.genai import errors, types
+
+    config = types.GenerateContentConfig(
+        system_instruction=system,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+    )
+    if schema is not None:
+        config.response_mime_type = "application/json"
+        config.response_schema = schema
+    try:
+        return await _gemini().aio.models.generate_content(
+            model=GEMINI_MODEL, contents=parts, config=config)
+    except errors.APIError as e:
+        if e.code == 429:
+            raise AnalysisError(RATE_LIMIT_MSG) from e
+        if e.code == 404:
+            logger.error("Gemini model %s not found", GEMINI_MODEL)
+            raise AnalysisError(f"Модель {GEMINI_MODEL} недоступна — зміни GEMINI_MODEL у .env") from e
+        logger.exception("Gemini API error %s", e.code)
+        raise AnalysisError(SERVICE_MSG) from e
+    except httpx.HTTPError as e:
+        logger.exception("Gemini connection error")
+        raise AnalysisError(SERVICE_MSG) from e
+
+
+async def _gemini_analyze(image: tuple[bytes, str] | None, text: str) -> MealAnalysis:
+    from google.genai import types
+
+    parts: list = []
+    if image:
+        parts.append(types.Part.from_bytes(data=image[0], mime_type=image[1]))
+    parts.append(text)
+    response = await _gemini_call(ANALYSIS_PROMPT, parts, MealAnalysis)
+    if isinstance(response.parsed, MealAnalysis):
+        return response.parsed
+    try:
+        return MealAnalysis.model_validate_json(response.text or "")
+    except ValueError as e:
+        raise AnalysisError("Не вдалося розібрати відповідь ШІ. Спробуй ще раз.") from e
+
+
+async def _gemini_chat(system: str, prompt: str) -> str:
+    response = await _gemini_call(system, [prompt], None)
+    text = (response.text or "").strip()
+    if not text:
+        raise AnalysisError("ШІ не зміг відповісти на це питання.")
+    return text
+
+
+# --- Anthropic Claude (платний, точніший) ---------------------------------------
+
+_claude_client = None
+
+
+def _claude():
+    global _claude_client
+    if _claude_client is None:
+        import anthropic
+        _claude_client = anthropic.AsyncAnthropic()  # ключ береться з ANTHROPIC_API_KEY
+    return _claude_client
+
+
+def _claude_kwargs(effort: str) -> dict:
     kwargs: dict = {}
     # Haiku 4.5 не підтримує adaptive thinking і effort.
     if not CLAUDE_MODEL.startswith("claude-haiku"):
@@ -71,55 +151,74 @@ def _model_kwargs(effort: str) -> dict:
     return kwargs
 
 
-async def _analyze(content: list[dict]) -> MealAnalysis:
-    response = await client.beta.messages.parse(
-        model=CLAUDE_MODEL,
-        max_tokens=16000,
-        system=ANALYSIS_PROMPT,
-        output_format=MealAnalysis,
-        messages=[{"role": "user", "content": content}],
-        **_model_kwargs("medium"),
-    )
+async def _claude_request(method: str, **params):
+    import anthropic
+
+    try:
+        response = await getattr(_claude().beta.messages, method)(
+            model=CLAUDE_MODEL, max_tokens=16000, **params)
+    except anthropic.RateLimitError as e:
+        raise AnalysisError(RATE_LIMIT_MSG) from e
+    except anthropic.APIStatusError as e:
+        logger.exception("Anthropic API error: %s", e.status_code)
+        raise AnalysisError(SERVICE_MSG) from e
+    except anthropic.APIConnectionError as e:
+        logger.exception("Anthropic connection error")
+        raise AnalysisError(SERVICE_MSG) from e
     if response.stop_reason == "refusal":
-        raise AnalysisError("Модель відмовилась це аналізувати.")
+        raise AnalysisError("ШІ відмовився це обробляти.")
+    return response
+
+
+async def _claude_analyze(image: tuple[bytes, str] | None, text: str) -> MealAnalysis:
+    content: list[dict] = []
+    if image:
+        content.append({"type": "image", "source": {
+            "type": "base64", "media_type": image[1],
+            "data": base64.standard_b64encode(image[0]).decode("utf-8")}})
+    content.append({"type": "text", "text": text})
+    response = await _claude_request(
+        "parse", system=ANALYSIS_PROMPT, output_format=MealAnalysis,
+        messages=[{"role": "user", "content": content}], **_claude_kwargs("medium"))
     if response.parsed_output is None:
-        raise AnalysisError("Не вдалося отримати відповідь від моделі.")
+        raise AnalysisError("Не вдалося отримати відповідь від ШІ.")
     return response.parsed_output
+
+
+async def _claude_chat(system: str, prompt: str) -> str:
+    response = await _claude_request(
+        "create", system=system, messages=[{"role": "user", "content": prompt}],
+        **_claude_kwargs("low"))
+    text = "".join(b.text for b in response.content if b.type == "text").strip()
+    if not text:
+        raise AnalysisError("ШІ не зміг відповісти на це питання.")
+    return text
+
+
+# --- публічні функції ------------------------------------------------------------
+
+def _analyze(image: tuple[bytes, str] | None, text: str):
+    if AI_PROVIDER == "claude":
+        return _claude_analyze(image, text)
+    return _gemini_analyze(image, text)
+
+
+def _chat(system: str, prompt: str):
+    if AI_PROVIDER == "claude":
+        return _claude_chat(system, prompt)
+    return _gemini_chat(system, prompt)
 
 
 async def analyze_photo(image_bytes: bytes, caption: str | None = None,
                         media_type: str = "image/jpeg") -> MealAnalysis:
-    image_data = base64.standard_b64encode(image_bytes).decode("utf-8")
     text = "Проаналізуй їжу на фото."
     if caption:
         text += f"\nПідпис користувача (використай як уточнення): {caption}"
-    return await _analyze([
-        {"type": "image",
-         "source": {"type": "base64", "media_type": media_type, "data": image_data}},
-        {"type": "text", "text": text},
-    ])
+    return await _analyze((image_bytes, media_type), text)
 
 
 async def analyze_text(description: str) -> MealAnalysis:
-    return await _analyze([
-        {"type": "text", "text": f"Користувач описав, що зʼїв:\n{description}"},
-    ])
-
-
-async def _chat(system: str, prompt: str) -> str:
-    response = await client.beta.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=16000,
-        system=system,
-        messages=[{"role": "user", "content": prompt}],
-        **_model_kwargs("low"),
-    )
-    if response.stop_reason == "refusal":
-        raise AnalysisError("Модель відмовилась відповідати на це питання.")
-    text = "".join(b.text for b in response.content if b.type == "text").strip()
-    if not text:
-        raise AnalysisError("Не вдалося отримати відповідь від моделі.")
-    return text
+    return await _analyze(None, f"Користувач описав, що зʼїв:\n{description}")
 
 
 async def suggest_meal(context: str) -> str:

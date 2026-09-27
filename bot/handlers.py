@@ -7,7 +7,6 @@ import json
 import logging
 from datetime import time as dtime
 
-import anthropic
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import Forbidden
@@ -94,17 +93,6 @@ async def _run_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE, coro
         analysis: MealAnalysis = await coro
     except AnalysisError as e:
         await status.edit_text(f"😔 {html.escape(str(e))}")
-        return
-    except anthropic.RateLimitError:
-        await status.edit_text("⏳ Забагато запитів. Спробуй за хвилину.")
-        return
-    except anthropic.APIStatusError as e:
-        logger.exception("Anthropic API error: %s", e.status_code)
-        await status.edit_text("😔 Помилка сервісу аналізу. Спробуй пізніше.")
-        return
-    except anthropic.APIConnectionError:
-        logger.exception("Anthropic connection error")
-        await status.edit_text("😔 Немає зʼєднання з сервісом аналізу. Спробуй пізніше.")
         return
 
     user = db.get_user(update.effective_user.id)
@@ -381,11 +369,6 @@ async def _coach_reply(update: Update, coro) -> None:
         text = await coro
     except AnalysisError as e:
         text = f"😔 {e}"
-    except anthropic.RateLimitError:
-        text = "⏳ Забагато запитів. Спробуй за хвилину."
-    except (anthropic.APIStatusError, anthropic.APIConnectionError):
-        logger.exception("Anthropic error in coach")
-        text = "😔 Сервіс тимчасово недоступний. Спробуй пізніше."
     await update.message.reply_text(text)
 
 

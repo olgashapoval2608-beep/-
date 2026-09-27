@@ -1,7 +1,11 @@
 # 🍽 Calorie Bot — ШІ-дієтолог у Telegram
 
 Надсилаєш фото їжі — бот розпізнає страви, оцінює вагу порцій, рахує калорії та БЖВ,
-веде щоденник, малює графіки й підбадьорює досягненнями. Розпізнавання — Claude API.
+веде щоденник, малює графіки й підбадьорює досягненнями.
+
+**Повністю безкоштовно:** ШІ — безкоштовний тариф Google Gemini, Telegram-бот — безкоштовний,
+запускати можна на своєму ПК або безкоштовному сервері. За бажання можна перемкнутися на
+платний Claude (`AI_PROVIDER=claude`).
 
 ## Функції
 
@@ -30,12 +34,12 @@
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env        # впиши TELEGRAM_BOT_TOKEN і ANTHROPIC_API_KEY
+cp .env.example .env        # впиши TELEGRAM_BOT_TOKEN і GEMINI_API_KEY
 python -m bot.main
 ```
 
 Детальна інструкція — створення бота, отримання ключів, розміщення на сервері й
-вартість — у **[DEPLOY.md](DEPLOY.md)**.
+безкоштовні варіанти — у **[DEPLOY.md](DEPLOY.md)**.
 
 ## Структура
 
@@ -44,7 +48,7 @@ bot/
   main.py       # запуск, реєстрація команд
   handlers.py   # фото/текст, статистика, вода, вага, коуч, нагадування
   profile.py    # анкета профілю
-  analyzer.py   # запити до Claude API
+  analyzer.py   # запити до ШІ (Gemini або Claude)
   nutrition.py  # норми, прогрес-бари, досягнення
   common.py     # меню, доступ, ліміти, підсумок дня
   charts.py     # графіки

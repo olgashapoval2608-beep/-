@@ -9,6 +9,7 @@ from bot import db
 from bot.config import ALLOWED_USERS, DAILY_AI_LIMIT
 from bot.nutrition import ACHIEVEMENTS, GOALS, MEAL_TYPES, progress_bar
 
+BTN_PHOTO = "📸 Сфотографувати їжу"
 BTN_TODAY = "📊 Сьогодні"
 BTN_WEEK = "📈 Тиждень"
 BTN_WATER = "💧 Вода"
@@ -20,12 +21,13 @@ BTN_PROFILE = "👤 Профіль"
 
 MAIN_MENU = ReplyKeyboardMarkup(
     [
+        [KeyboardButton(BTN_PHOTO)],
         [KeyboardButton(BTN_TODAY), KeyboardButton(BTN_WEEK)],
         [KeyboardButton(BTN_WATER), KeyboardButton(BTN_WEIGHT), KeyboardButton(BTN_SUGGEST)],
         [KeyboardButton(BTN_ASK), KeyboardButton(BTN_ACHIEVEMENTS), KeyboardButton(BTN_PROFILE)],
     ],
     resize_keyboard=True,
-    input_field_placeholder="Надішли фото їжі або опиши, що зʼїв(ла)",
+    input_field_placeholder="📎 → Камера, або опиши, що зʼїв(ла)",
 )
 
 

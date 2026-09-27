@@ -15,7 +15,7 @@ from telegram.ext import ContextTypes
 from bot import charts, db
 from bot.analyzer import (AnalysisError, MealAnalysis, analyze_photo, analyze_text,
                           ask_coach, format_analysis, suggest_meal)
-from bot.common import (BTN_ACHIEVEMENTS, BTN_ASK, BTN_SUGGEST, BTN_TODAY, BTN_WATER,
+from bot.common import (BTN_ACHIEVEMENTS, BTN_ASK, BTN_PHOTO, BTN_SUGGEST, BTN_TODAY, BTN_WATER,
                         BTN_WEEK, BTN_WEIGHT, MAIN_MENU, achievements_text, ai_allowed,
                         check_achievements, coach_context, day_summary, has_profile)
 from bot.config import EVENING_SUMMARY_HOUR, LUNCH_REMINDER_HOUR, TIMEZONE
@@ -27,9 +27,18 @@ MULTIPLIERS = [0.5, 1.0, 1.5, 2.0]
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
+PHOTO_HOWTO = (
+    "📸 <b>Як сфотографувати їжу</b>\n\n"
+    "1. Натисни 📎 (скріпку) поруч із полем для повідомлення\n"
+    "2. Обери «Камера» 📷 і сфотографуй тарілку зверху\n"
+    "3. Надішли фото — через кілька секунд я все порахую\n\n"
+    "💡 Порада: щоб у кадрі була вся тарілка, а поруч — виделка чи ложка для масштабу.\n"
+    "Можна надіслати й фото з галереї або просто написати, що зʼїв(ла)."
+)
+
 HELP = (
     "🤖 <b>Що я вмію</b>\n\n"
-    "📸 <b>Фото їжі</b> — розпізнаю страви, вагу, калорії, БЖВ і корисність\n"
+    "📸 <b>Фото їжі</b> — натисни 📎 → «Камера» і сфотографуй тарілку. Розпізнаю страви, вагу, калорії, БЖВ і корисність\n"
     "✍️ <b>Текст</b> — «2 яйця, тост з авокадо і капучино» теж порахую\n"
     "⚖️ Після аналізу обери розмір порції (½, ×1.5, ×2) і натисни «Записати»\n\n"
     "/today — підсумок дня з прогрес-барами\n"
@@ -65,6 +74,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Щоб я розрахував твою денну норму калорій, заповни короткий профіль 👇",
             reply_markup=kb,
         )
+
+
+async def photo_howto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(PHOTO_HOWTO, parse_mode=ParseMode.HTML, reply_markup=MAIN_MENU)
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -399,6 +412,7 @@ async def _ask(update: Update, question: str) -> None:
 # --- текст -------------------------------------------------------------------
 
 MENU_ROUTES = {
+    BTN_PHOTO: photo_howto,
     BTN_TODAY: today_cmd,
     BTN_WEEK: week_cmd,
     BTN_WATER: water_cmd,

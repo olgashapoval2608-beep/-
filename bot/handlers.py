@@ -13,6 +13,7 @@ from telegram.error import Forbidden
 from telegram.ext import ContextTypes
 
 from bot import charts, db
+from bot.access import is_allowed
 from bot.analyzer import (AnalysisError, MealAnalysis, analyze_photo, analyze_text,
                           ask_coach, format_analysis, suggest_meal)
 from bot.common import (BTN_ACHIEVEMENTS, BTN_ASK, BTN_PHOTO, BTN_SUGGEST, BTN_TODAY, BTN_WATER,
@@ -239,6 +240,9 @@ async def week_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         caption.append(f"Баланс за тиждень: {sum(v - target for _, v in logged):+.0f} ккал")
     caption.append(f"🔝 Найбільше: {best[1]:.0f} ккал ({best[0].day:02d}.{best[0].month:02d})")
     caption.append(f"🔥 Серія: {db.streak(user_id)} дн.")
+    if not charts.AVAILABLE:
+        await update.message.reply_text("\n".join(caption), parse_mode=ParseMode.HTML)
+        return
     await update.message.reply_photo(charts.week_chart(days, target),
                                      caption="\n".join(caption), parse_mode=ParseMode.HTML)
 
@@ -350,7 +354,7 @@ async def _log_weight(update: Update, kg: float) -> None:
     if db.unlock(user_id, "weight_logged"):
         lines.append(achievements_text(["weight_logged"]))
     history = db.weight_history(user_id)
-    if len(history) >= 2:
+    if len(history) >= 2 and charts.AVAILABLE:
         await update.message.reply_photo(charts.weight_chart(history), caption="\n".join(lines),
                                          parse_mode=ParseMode.HTML)
     else:
@@ -478,6 +482,8 @@ async def _send_safe(context: ContextTypes.DEFAULT_TYPE, user_id: int, text: str
 
 async def lunch_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     for user in db.users_with_reminders():
+        if not is_allowed(user["user_id"]):
+            continue
         if not db.meals_for_day(user["user_id"], db.today()):
             await _send_safe(context, user["user_id"],
                              "🍽 Не забудь записати, що ти сьогодні їв(ла)! Просто надішли фото 📸")
@@ -486,7 +492,7 @@ async def lunch_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     for user in db.users_with_reminders():
         user_id = user["user_id"]
-        if not db.meals_for_day(user_id, db.today()):
+        if not is_allowed(user_id) or not db.meals_for_day(user_id, db.today()):
             continue
         new = check_achievements(user_id, check_target=True)
         text = "🌙 <b>Підсумок дня</b>\n\n" + day_summary(user_id) + achievements_text(new)

@@ -18,10 +18,17 @@ TIMEZONE = ZoneInfo(os.environ.get("TIMEZONE", "Europe/Kyiv"))
 # Скільки запитів до ШІ (фото, текст, поради) може зробити один користувач за день.
 DAILY_AI_LIMIT = int(os.environ.get("DAILY_AI_LIMIT", "40"))
 
-# Telegram ID через кому. Якщо порожньо — ботом може користуватися будь-хто.
+# Telegram ID власника. Лише власник може давати доступ іншим (/invite, /users).
+# Поки не задано, бот нікого не обслуговує і лише підказує твій ID.
+OWNER_ID = int(os.environ.get("OWNER_ID", "0").strip() or 0)
+
+# Додаткові Telegram ID через кому, яким доступ дозволено завжди.
 ALLOWED_USERS = {
     int(x) for x in os.environ.get("ALLOWED_USERS", "").replace(" ", "").split(",") if x
 }
+
+# true — ботом може користуватися будь-хто (не рекомендується: ліміти ШІ спільні).
+PUBLIC_MODE = os.environ.get("PUBLIC_MODE", "false").strip().lower() in ("1", "true", "yes")
 
 # Час щоденних нагадувань (години за TIMEZONE).
 LUNCH_REMINDER_HOUR = int(os.environ.get("LUNCH_REMINDER_HOUR", "14"))

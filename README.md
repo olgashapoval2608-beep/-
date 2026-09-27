@@ -27,14 +27,15 @@
 | 🔔 **Нагадування** | Удень — якщо ще нічого не записано, увечері — підсумок дня |
 | 📒 **/export** | Весь щоденник у CSV (відкривається в Excel / Google Таблицях) |
 | ↩️ **/undo** | Видалити останній запис |
-| 🔒 **Захист бюджету** | Список дозволених користувачів і денний ліміт запитів до ШІ |
+| 🔒 **Приватний доступ** | Лише ти і ті, кого запросиш: `/invite` (посилання), підтвердження кнопкою, `/users` |
+| 🛡 **Захист лімітів** | Чужі люди отримують «🔒 Приватний бот»; денний ліміт запитів до ШІ на людину |
 
 ## Швидкий старт
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env        # впиши TELEGRAM_BOT_TOKEN і GEMINI_API_KEY
+cp .env.example .env        # впиши TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, OWNER_ID
 python -m bot.main
 ```
 
@@ -48,6 +49,7 @@ bot/
   main.py       # запуск, реєстрація команд
   handlers.py   # фото/текст, статистика, вода, вага, коуч, нагадування
   profile.py    # анкета профілю
+  access.py     # власник, запрошення, підтвердження доступу
   analyzer.py   # запити до ШІ (Gemini або Claude)
   nutrition.py  # норми, прогрес-бари, досягнення
   common.py     # меню, доступ, ліміти, підсумок дня

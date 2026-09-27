@@ -3,10 +3,14 @@
 import io
 from datetime import date
 
-import matplotlib
+try:
+    import matplotlib
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    AVAILABLE = True
+except ImportError:  # на телефоні (Termux) можна обійтися без графіків
+    AVAILABLE = False
 
 WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 GREEN, ORANGE, RED, INK, MUTED = "#2a9d62", "#e9a23b", "#d1495b", "#1f2933", "#8a94a6"

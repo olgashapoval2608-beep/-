@@ -6,9 +6,9 @@ from telegram import BotCommand, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
                           MessageHandler, TypeHandler, filters)
 
-from bot import db, handlers as h
-from bot.common import access_gate
-from bot.config import TELEGRAM_BOT_TOKEN
+from bot import access, db, handlers as h
+from bot.access import access_gate
+from bot.config import OWNER_ID, PUBLIC_MODE, TELEGRAM_BOT_TOKEN
 from bot.profile import build_profile_handler
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
@@ -33,6 +33,7 @@ COMMANDS = [
 
 async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([BotCommand(c, d) for c, d in COMMANDS])
+    await access.setup_owner_commands(app, COMMANDS)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -41,12 +42,9 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text("😔 Щось пішло не так. Спробуй ще раз.")
 
 
-def main() -> None:
-    if not TELEGRAM_BOT_TOKEN:
-        raise SystemExit("Не задано TELEGRAM_BOT_TOKEN (див. .env.example)")
-    db.conn()
-
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+def build_application(builder=None) -> Application:
+    builder = builder or Application.builder().token(TELEGRAM_BOT_TOKEN)
+    app = builder.post_init(post_init).build()
     app.add_handler(TypeHandler(Update, access_gate), group=-1)
 
     app.add_handler(build_profile_handler())
@@ -62,6 +60,9 @@ def main() -> None:
     app.add_handler(CommandHandler("undo", h.undo_cmd))
     app.add_handler(CommandHandler("export", h.export_cmd))
     app.add_handler(CommandHandler("reminders", h.reminders_cmd))
+    app.add_handler(CommandHandler("invite", access.invite_cmd))
+    app.add_handler(CommandHandler("users", access.users_cmd))
+    app.add_handler(CallbackQueryHandler(access.on_access_button, pattern=r"^acc:"))
 
     app.add_handler(CallbackQueryHandler(h.on_meal_button, pattern=r"^m:"))
     app.add_handler(CallbackQueryHandler(h.on_water_button, pattern=r"^w:"))
@@ -73,7 +74,19 @@ def main() -> None:
 
     app.add_error_handler(on_error)
     h.schedule_jobs(app)
+    return app
 
+
+def main() -> None:
+    if not TELEGRAM_BOT_TOKEN:
+        raise SystemExit("Не задано TELEGRAM_BOT_TOKEN (див. .env.example)")
+    db.conn()
+    app = build_application()
+
+    if PUBLIC_MODE:
+        logger.warning("PUBLIC_MODE увімкнено: ботом може користуватися будь-хто")
+    elif not OWNER_ID:
+        logger.warning("OWNER_ID не задано: напиши боту, він покаже твій ID")
     logger.info("Bot started")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

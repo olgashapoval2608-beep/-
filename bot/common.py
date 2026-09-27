@@ -3,10 +3,9 @@
 import html
 
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
-from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from bot import db
-from bot.config import ALLOWED_USERS, DAILY_AI_LIMIT
+from bot.config import DAILY_AI_LIMIT
 from bot.nutrition import ACHIEVEMENTS, GOALS, MEAL_TYPES, progress_bar
 
 BTN_PHOTO = "📸 Сфотографувати їжу"
@@ -29,20 +28,6 @@ MAIN_MENU = ReplyKeyboardMarkup(
     resize_keyboard=True,
     input_field_placeholder="📎 → Камера, або опиши, що зʼїв(ла)",
 )
-
-
-async def access_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Виконується перед усіма хендлерами: перевіряє доступ і створює користувача."""
-    user = update.effective_user
-    if user is None:
-        return
-    if ALLOWED_USERS and user.id not in ALLOWED_USERS:
-        if update.effective_message:
-            await update.effective_message.reply_text(
-                f"🔒 Це приватний бот. Твій Telegram ID: {user.id}"
-            )
-        raise ApplicationHandlerStop
-    db.ensure_user(user.id, user.first_name or "")
 
 
 async def ai_allowed(update: Update) -> bool:

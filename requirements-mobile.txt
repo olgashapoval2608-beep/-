@@ -1,0 +1,6 @@
+# Мінімальний набір для телефону (Android + Termux): без графіків і без Claude.
+google-genai>=1.0
+python-telegram-bot[job-queue]>=22.0
+pydantic>=2.0
+python-dotenv>=1.0
+tzdata

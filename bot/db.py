@@ -58,6 +58,23 @@ CREATE TABLE IF NOT EXISTS achievements (
     ts      TEXT NOT NULL,
     PRIMARY KEY (user_id, code)
 );
+CREATE TABLE IF NOT EXISTS access (
+    user_id    INTEGER PRIMARY KEY,
+    name       TEXT,
+    username   TEXT,
+    granted_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS invites (
+    code       TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    used_by    INTEGER
+);
+CREATE TABLE IF NOT EXISTS access_requests (
+    user_id    INTEGER PRIMARY KEY,
+    name       TEXT,
+    username   TEXT,
+    ts         TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS ai_usage (
     user_id INTEGER NOT NULL,
     day     TEXT NOT NULL,
@@ -237,6 +254,56 @@ def unlock(user_id: int, code: str) -> bool:
 def achievements(user_id: int) -> set[str]:
     rows = conn().execute("SELECT code FROM achievements WHERE user_id = ?", (user_id,)).fetchall()
     return {r["code"] for r in rows}
+
+
+# --- access ------------------------------------------------------------------
+
+def has_access(user_id: int) -> bool:
+    return conn().execute("SELECT 1 FROM access WHERE user_id = ?", (user_id,)).fetchone() is not None
+
+
+def grant_access(user_id: int, name: str, username: str | None) -> None:
+    c = conn()
+    c.execute("INSERT OR REPLACE INTO access (user_id, name, username, granted_at) VALUES (?, ?, ?, ?)",
+              (user_id, name, username, now().isoformat()))
+    c.execute("DELETE FROM access_requests WHERE user_id = ?", (user_id,))
+    c.commit()
+
+
+def revoke_access(user_id: int) -> bool:
+    cur = conn().execute("DELETE FROM access WHERE user_id = ?", (user_id,))
+    conn().commit()
+    return cur.rowcount > 0
+
+
+def access_list() -> list[sqlite3.Row]:
+    return conn().execute("SELECT * FROM access ORDER BY granted_at").fetchall()
+
+
+def create_invite(code: str) -> None:
+    conn().execute("INSERT INTO invites (code, created_at) VALUES (?, ?)", (code, now().isoformat()))
+    conn().commit()
+
+
+def use_invite(code: str, user_id: int, max_age_days: int = 7) -> bool:
+    """Позначає одноразове запрошення використаним. False — якщо код невалідний або старий."""
+    row = conn().execute("SELECT * FROM invites WHERE code = ? AND used_by IS NULL",
+                         (code,)).fetchone()
+    if row is None or now() - datetime.fromisoformat(row["created_at"]) > timedelta(days=max_age_days):
+        return False
+    conn().execute("UPDATE invites SET used_by = ? WHERE code = ?", (user_id, code))
+    conn().commit()
+    return True
+
+
+def add_access_request(user_id: int, name: str, username: str | None) -> bool:
+    """Повертає True, якщо це перший запит від цієї людини (щоб не спамити власника)."""
+    cur = conn().execute(
+        "INSERT OR IGNORE INTO access_requests (user_id, name, username, ts) VALUES (?, ?, ?, ?)",
+        (user_id, name, username, now().isoformat()),
+    )
+    conn().commit()
+    return cur.rowcount > 0
 
 
 # --- AI usage limit ----------------------------------------------------------

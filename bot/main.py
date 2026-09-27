@@ -1,80 +1,78 @@
-"""Telegram-бот для розрахунку калорій по фото."""
+"""Точка входу: python -m bot.main"""
 
-import html
 import logging
-import os
 
-import anthropic
-from dotenv import load_dotenv
-from telegram import Update
-from telegram.constants import ChatAction, ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import BotCommand, Update
+from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
+                          MessageHandler, TypeHandler, filters)
 
-load_dotenv()
-
-from bot.analyzer import AnalysisError, analyze_photo, format_analysis  # noqa: E402
+from bot import db, handlers as h
+from bot.common import access_gate
+from bot.config import TELEGRAM_BOT_TOKEN
+from bot.profile import build_profile_handler
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-WELCOME = (
-    "👋 Привіт! Я рахую калорії по фото.\n\n"
-    "📸 Надішли фото своєї страви — я визначу продукти, орієнтовну вагу, "
-    "калорії та БЖВ.\n"
-    "✍️ Можеш додати підпис до фото для точності, наприклад: «гречка 200 г, курка 150 г».\n\n"
-    "⚠️ Це приблизна оцінка, а не лабораторний аналіз."
-)
+COMMANDS = [
+    ("today", "📊 Підсумок дня"),
+    ("week", "📈 Графік за тиждень"),
+    ("water", "💧 Трекер води"),
+    ("weight", "⚖️ Записати вагу"),
+    ("suggest", "🍳 Що зʼїсти?"),
+    ("ask", "💬 Питання дієтологу"),
+    ("achievements", "🏆 Досягнення"),
+    ("undo", "↩️ Видалити останній запис"),
+    ("export", "📒 Експорт у CSV"),
+    ("reminders", "🔔 Нагадування"),
+    ("profile", "👤 Профіль і норма"),
+    ("help", "❓ Допомога"),
+]
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(WELCOME)
+async def post_init(app: Application) -> None:
+    await app.bot.set_my_commands([BotCommand(c, d) for c, d in COMMANDS])
 
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
-    await context.bot.send_chat_action(message.chat_id, ChatAction.TYPING)
-    status = await message.reply_text("🔍 Аналізую фото...")
-
-    photo = message.photo[-1]  # найбільша роздільна здатність
-    file = await photo.get_file()
-    image_bytes = bytes(await file.download_as_bytearray())
-
-    try:
-        analysis = await analyze_photo(image_bytes, message.caption)
-        text = format_analysis(analysis)
-    except AnalysisError as e:
-        text = f"😔 {html.escape(str(e))}"
-    except anthropic.RateLimitError:
-        text = "⏳ Забагато запитів. Спробуй за хвилину."
-    except anthropic.APIStatusError as e:
-        logger.exception("Anthropic API error: %s", e.status_code)
-        text = "😔 Помилка сервісу аналізу. Спробуй пізніше."
-    except anthropic.APIConnectionError:
-        logger.exception("Anthropic connection error")
-        text = "😔 Немає зʼєднання з сервісом аналізу. Спробуй пізніше."
-
-    await status.edit_text(text, parse_mode=ParseMode.HTML)
-
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Надішли, будь ласка, зображення як фото (не як файл) 📸")
-
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Надішли фото їжі, і я порахую калорії 📸")
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("Unhandled error", exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text("😔 Щось пішло не так. Спробуй ще раз.")
 
 
 def main() -> None:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
+    if not TELEGRAM_BOT_TOKEN:
         raise SystemExit("Не задано TELEGRAM_BOT_TOKEN (див. .env.example)")
+    db.conn()
 
-    app = Application.builder().token(token).build()
-    app.add_handler(CommandHandler(["start", "help"], start))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.Document.IMAGE, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    app.add_handler(TypeHandler(Update, access_gate), group=-1)
+
+    app.add_handler(build_profile_handler())
+    app.add_handler(CommandHandler("start", h.start))
+    app.add_handler(CommandHandler("help", h.help_cmd))
+    app.add_handler(CommandHandler("today", h.today_cmd))
+    app.add_handler(CommandHandler("week", h.week_cmd))
+    app.add_handler(CommandHandler("water", h.water_cmd))
+    app.add_handler(CommandHandler("weight", h.weight_cmd))
+    app.add_handler(CommandHandler("suggest", h.suggest_cmd))
+    app.add_handler(CommandHandler("ask", h.ask_cmd))
+    app.add_handler(CommandHandler("achievements", h.achievements_cmd))
+    app.add_handler(CommandHandler("undo", h.undo_cmd))
+    app.add_handler(CommandHandler("export", h.export_cmd))
+    app.add_handler(CommandHandler("reminders", h.reminders_cmd))
+
+    app.add_handler(CallbackQueryHandler(h.on_meal_button, pattern=r"^m:"))
+    app.add_handler(CallbackQueryHandler(h.on_water_button, pattern=r"^w:"))
+    app.add_handler(CallbackQueryHandler(h.undo_cmd, pattern=r"^undo$"))
+
+    app.add_handler(MessageHandler(filters.PHOTO, h.on_photo))
+    app.add_handler(MessageHandler(filters.Document.IMAGE, h.on_image_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, h.on_text))
+
+    app.add_error_handler(on_error)
+    h.schedule_jobs(app)
 
     logger.info("Bot started")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

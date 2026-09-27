@@ -1,0 +1,16 @@
+# systemd-сервіс для запуску без Docker.
+# Скопіюй у /etc/systemd/system/calorie-bot.service і заміни шляхи/користувача.
+[Unit]
+Description=Calorie Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bot
+WorkingDirectory=/home/bot/calorie-bot
+ExecStart=/home/bot/calorie-bot/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

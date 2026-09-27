@@ -1,4 +1,4 @@
-"""Оцінка калорійності їжі на фото через Claude API."""
+"""Усі звернення до Claude API: фото, текстовий опис, поради, питання коучу."""
 
 import base64
 import html
@@ -6,15 +6,23 @@ import html
 import anthropic
 from pydantic import BaseModel, Field
 
-MODEL = "claude-opus-5"
+from bot.config import CLAUDE_MODEL
 
-SYSTEM_PROMPT = """Ти — дієтолог-нутриціолог. Користувач надсилає фото їжі.
-Визнач кожну страву або продукт на фото, оціни вагу порції в грамах
-(орієнтуйся на розмір тарілки, столових приборів, упаковки) і розрахуй
-калорії та БЖВ (білки, жири, вуглеводи) для кожної позиції.
-Назви страв пиши українською. Якщо на фото немає їжі — поверни порожній
-список items і поясни це в comment. Якщо користувач додав підпис до фото
-(наприклад, вагу або склад), використовуй його як уточнення."""
+# Моделі, для яких вмикаємо серверний fallback при відмові (refusal).
+FALLBACK_MODELS = {"claude-opus-5", "claude-fable-5-1"}
+
+ANALYSIS_PROMPT = """Ти — дієтолог-нутриціолог у Telegram-боті для підрахунку калорій.
+Визнач кожну страву або продукт, оціни вагу порції в грамах (орієнтуйся на розмір
+тарілки, приборів, упаковки або на опис користувача) і розрахуй калорії та БЖВ.
+Враховуй приховані калорії: олію для смаження, соуси, цукор у напоях.
+Пиши українською, дружньо і коротко. Оціни корисність прийому їжі від 1 до 10.
+fun_fact — один цікавий або кумедний факт про цю їжу (1 речення).
+Якщо їжі немає — поверни порожній список items і поясни це в verdict."""
+
+COACH_PROMPT = """Ти — дружній дієтолог-коуч у Telegram-боті. Відповідай українською,
+коротко (до 150 слів), по суті, з кількома доречними емодзі. Не став медичних
+діагнозів; при серйозних проблемах зі здоровʼям радь звернутися до лікаря.
+Не використовуй Markdown-розмітку (зірочки, решітки) — лише звичайний текст."""
 
 
 class FoodItem(BaseModel):
@@ -27,9 +35,21 @@ class FoodItem(BaseModel):
 
 
 class MealAnalysis(BaseModel):
+    title: str = Field(description="Коротка назва прийому їжі, 2-5 слів")
     items: list[FoodItem]
+    health_score: int = Field(description="Корисність від 1 до 10")
     confidence: str = Field(description="Впевненість оцінки: висока, середня або низька")
-    comment: str = Field(description="Коротка порада або пояснення українською")
+    verdict: str = Field(description="Коротка оцінка і порада, 1-2 речення")
+    fun_fact: str = Field(description="Цікавий факт про цю їжу, 1 речення")
+
+    @property
+    def totals(self) -> dict:
+        return {
+            "kcal": sum(i.calories for i in self.items),
+            "protein": sum(i.protein_g for i in self.items),
+            "fat": sum(i.fat_g for i in self.items),
+            "carbs": sum(i.carbs_g for i in self.items),
+        }
 
 
 class AnalysisError(Exception):
@@ -39,66 +59,110 @@ class AnalysisError(Exception):
 client = anthropic.AsyncAnthropic()
 
 
-async def analyze_photo(image_bytes: bytes, caption: str | None = None) -> MealAnalysis:
-    image_data = base64.standard_b64encode(image_bytes).decode("utf-8")
-    text = "Проаналізуй їжу на фото."
-    if caption:
-        text += f"\nПідпис користувача: {caption}"
+def _model_kwargs(effort: str) -> dict:
+    kwargs: dict = {}
+    # Haiku 4.5 не підтримує adaptive thinking і effort.
+    if not CLAUDE_MODEL.startswith("claude-haiku"):
+        kwargs["thinking"] = {"type": "adaptive"}
+        kwargs["output_config"] = {"effort": effort}
+    if CLAUDE_MODEL in FALLBACK_MODELS:
+        kwargs["betas"] = ["server-side-fallback-2026-07-01"]
+        kwargs["fallbacks"] = "default"
+    return kwargs
 
+
+async def _analyze(content: list[dict]) -> MealAnalysis:
     response = await client.beta.messages.parse(
-        model=MODEL,
+        model=CLAUDE_MODEL,
         max_tokens=16000,
-        system=SYSTEM_PROMPT,
-        thinking={"type": "adaptive"},
-        output_config={"effort": "medium"},
+        system=ANALYSIS_PROMPT,
         output_format=MealAnalysis,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": image_data,
-                        },
-                    },
-                    {"type": "text", "text": text},
-                ],
-            }
-        ],
+        messages=[{"role": "user", "content": content}],
+        **_model_kwargs("medium"),
     )
-
     if response.stop_reason == "refusal":
-        raise AnalysisError("Модель відмовилась аналізувати це фото.")
-    if response.stop_reason == "max_tokens" or response.parsed_output is None:
+        raise AnalysisError("Модель відмовилась це аналізувати.")
+    if response.parsed_output is None:
         raise AnalysisError("Не вдалося отримати відповідь від моделі.")
     return response.parsed_output
 
 
-def format_analysis(analysis: MealAnalysis) -> str:
-    if not analysis.items:
-        return f"🤔 Не бачу їжі на фото.\n{html.escape(analysis.comment)}"
+async def analyze_photo(image_bytes: bytes, caption: str | None = None,
+                        media_type: str = "image/jpeg") -> MealAnalysis:
+    image_data = base64.standard_b64encode(image_bytes).decode("utf-8")
+    text = "Проаналізуй їжу на фото."
+    if caption:
+        text += f"\nПідпис користувача (використай як уточнення): {caption}"
+    return await _analyze([
+        {"type": "image",
+         "source": {"type": "base64", "media_type": media_type, "data": image_data}},
+        {"type": "text", "text": text},
+    ])
 
-    lines = ["🍽 <b>Результат аналізу</b>\n"]
-    for item in analysis.items:
-        lines.append(
-            f"• <b>{html.escape(item.name)}</b> (~{item.weight_g:.0f} г): {item.calories:.0f} ккал\n"
-            f"  Б {item.protein_g:.1f} / Ж {item.fat_g:.1f} / В {item.carbs_g:.1f} г"
-        )
 
-    total_cal = sum(i.calories for i in analysis.items)
-    total_p = sum(i.protein_g for i in analysis.items)
-    total_f = sum(i.fat_g for i in analysis.items)
-    total_c = sum(i.carbs_g for i in analysis.items)
-    lines.append(
-        f"\n🔥 <b>Разом: {total_cal:.0f} ккал</b>\n"
-        f"Б {total_p:.1f} г / Ж {total_f:.1f} г / В {total_c:.1f} г"
+async def analyze_text(description: str) -> MealAnalysis:
+    return await _analyze([
+        {"type": "text", "text": f"Користувач описав, що зʼїв:\n{description}"},
+    ])
+
+
+async def _chat(system: str, prompt: str) -> str:
+    response = await client.beta.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=16000,
+        system=system,
+        messages=[{"role": "user", "content": prompt}],
+        **_model_kwargs("low"),
     )
-    lines.append(f"\n📊 Впевненість: {html.escape(analysis.confidence)}")
-    if analysis.comment:
-        lines.append(f"💡 {html.escape(analysis.comment)}")
+    if response.stop_reason == "refusal":
+        raise AnalysisError("Модель відмовилась відповідати на це питання.")
+    text = "".join(b.text for b in response.content if b.type == "text").strip()
+    if not text:
+        raise AnalysisError("Не вдалося отримати відповідь від моделі.")
+    return text
+
+
+async def suggest_meal(context: str) -> str:
+    return await _chat(
+        COACH_PROMPT,
+        f"{context}\n\nЗапропонуй 3 варіанти, що зʼїсти зараз, щоб вписатися в залишок "
+        "калорій і БЖВ. Для кожного — назва, приблизні ккал і чому це хороший вибір.",
+    )
+
+
+async def ask_coach(question: str, context: str) -> str:
+    return await _chat(COACH_PROMPT, f"{context}\n\nПитання користувача: {question}")
+
+
+def format_analysis(a: MealAnalysis, multiplier: float = 1.0,
+                    weight_kg: float | None = None) -> str:
+    from bot.nutrition import exercise_equivalents, health_emoji
+
+    if not a.items:
+        return f"🤔 Не бачу тут їжі.\n{html.escape(a.verdict)}"
+
+    lines = [f"🍽 <b>{html.escape(a.title)}</b>"]
+    if multiplier != 1:
+        lines[0] += f"  <i>(×{multiplier:g} порції)</i>"
+    lines.append("")
+    for item in a.items:
+        m = multiplier
+        lines.append(
+            f"• <b>{html.escape(item.name)}</b> (~{item.weight_g * m:.0f} г) — "
+            f"{item.calories * m:.0f} ккал\n"
+            f"   Б {item.protein_g * m:.1f} · Ж {item.fat_g * m:.1f} · В {item.carbs_g * m:.1f}"
+        )
+    t = {k: v * multiplier for k, v in a.totals.items()}
+    lines += [
+        "",
+        f"🔥 <b>Разом: {t['kcal']:.0f} ккал</b>",
+        f"🥩 Б {t['protein']:.0f} г · 🧈 Ж {t['fat']:.0f} г · 🍞 В {t['carbs']:.0f} г",
+        "",
+        f"{health_emoji(a.health_score)} Корисність: <b>{a.health_score}/10</b>"
+        f" · впевненість: {html.escape(a.confidence)}",
+        f"💪 Щоб спалити: {exercise_equivalents(t['kcal'], weight_kg)}",
+        "",
+        f"💬 {html.escape(a.verdict)}",
+        f"🤓 <i>{html.escape(a.fun_fact)}</i>",
+    ]
     return "\n".join(lines)

@@ -8,7 +8,9 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, Con
 
 from bot import access, db, handlers as h
 from bot.access import access_gate
-from bot.config import OWNER_ID, PUBLIC_MODE, TELEGRAM_BOT_TOKEN
+import os
+
+from bot.config import AI_PROVIDER, OWNER_ID, PUBLIC_MODE, TELEGRAM_BOT_TOKEN
 from bot.profile import build_profile_handler
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
@@ -77,9 +79,27 @@ def build_application(builder=None) -> Application:
     return app
 
 
+def _is_set(value: str | None) -> bool:
+    """Порожні значення і зразки з .env.example вважаємо незаповненими."""
+    return bool(value) and "your" not in value
+
+
+def check_settings() -> None:
+    problems = []
+    if not _is_set(TELEGRAM_BOT_TOKEN):
+        problems.append("TELEGRAM_BOT_TOKEN — токен від @BotFather")
+    if AI_PROVIDER == "gemini" and not (_is_set(os.environ.get("GEMINI_API_KEY"))
+                                        or _is_set(os.environ.get("GOOGLE_API_KEY"))):
+        problems.append("GEMINI_API_KEY — ключ з https://aistudio.google.com/apikey")
+    if AI_PROVIDER == "claude" and not _is_set(os.environ.get("ANTHROPIC_API_KEY")):
+        problems.append("ANTHROPIC_API_KEY — ключ з https://platform.claude.com/")
+    if problems:
+        raise SystemExit("❌ Відкрий файл .env і впиши:\n  • " + "\n  • ".join(problems)
+                         + "\nПотім збережи файл і запусти бота знову.")
+
+
 def main() -> None:
-    if not TELEGRAM_BOT_TOKEN:
-        raise SystemExit("Не задано TELEGRAM_BOT_TOKEN (див. .env.example)")
+    check_settings()
     db.conn()
     app = build_application()
 
